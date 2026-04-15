@@ -1,0 +1,41 @@
+{
+  "name": "@streamlinelabs/browser-sdk",
+  "version": "0.1.0",
+  "description": "Streamline browser SDK — produce/consume directly from the browser via WebSocket/WebTransport, with IndexedDB persistence and CRDT sync (M3, Experimental).",
+  "type": "module",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "lint": "eslint 'src/**/*.ts'",
+    "typecheck": "tsc --noEmit"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/StreamlineLabs/streamline-browser-sdk"
+  },
+  "keywords": [
+    "streamline",
+    "kafka",
+    "browser",
+    "crdt",
+    "edge",
+    "offline-first"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "vitest": "^1.6.0",
+    "fake-indexeddb": "^5.0.2"
+  }
+}
