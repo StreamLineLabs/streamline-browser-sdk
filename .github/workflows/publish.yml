@@ -1,0 +1,44 @@
+name: Publish Browser SDK
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - run: npm ci
+
+      - run: npm test
+
+      - run: npm run build
+
+      # Size budget check — browser SDK must stay under 200KB
+      - name: Check bundle size
+        run: |
+          SIZE=$(stat -c%s dist/index.js 2>/dev/null || stat -f%z dist/index.js)
+          MAX=204800  # 200KB
+          echo "Bundle size: $SIZE bytes (max: $MAX bytes)"
+          if [ "$SIZE" -gt "$MAX" ]; then
+            echo "::error::Bundle too large: $SIZE > $MAX bytes"
+            exit 1
+          fi
+          echo "✓ Bundle size within budget"
+
+      - run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
