@@ -1,7 +1,7 @@
 {
   "name": "@streamlinelabs/browser-sdk",
-  "version": "0.1.0",
-  "description": "Streamline browser SDK — produce/consume directly from the browser via WebSocket/WebTransport, with IndexedDB persistence and CRDT sync (M3, Experimental).",
+  "version": "0.3.0",
+  "description": "Streamline browser SDK \u2014 produce/consume directly from the browser via WebSocket/WebTransport, with IndexedDB persistence and CRDT sync (M3, Experimental).",
   "type": "module",
   "main": "dist/index.js",
   "module": "dist/index.js",
