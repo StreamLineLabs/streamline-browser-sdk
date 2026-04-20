@@ -7,6 +7,7 @@ export { Client } from "./client.js";
 export type { ClientOptions, DrainCallback } from "./client.js";
 export { Topic } from "./topic.js";
 export { LocalStore } from "./storage.js";
+export { StreamlineError, StreamlineErrorCode, validateTopicName } from "./types.js";
 export type { Record, RecordHeaders, DrainProgress } from "./types.js";
 export {
   SearchClient,

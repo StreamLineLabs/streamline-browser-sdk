@@ -13,6 +13,7 @@
 import { LocalStore } from "./storage.js";
 import { Topic } from "./topic.js";
 import type { Record, DrainProgress } from "./types.js";
+import { StreamlineError, StreamlineErrorCode, validateTopicName } from "./types.js";
 
 export interface ClientOptions {
   /** ws(s):// or https:// (WebTransport) URL of the broker. */
@@ -107,7 +108,11 @@ export class Client {
 
         resolve();
       };
-      sock.onerror = (e) => reject(new Error(`websocket error: ${String(e)}`));
+      sock.onerror = (e) => reject(new StreamlineError(
+        `WebSocket connection failed: ${String(e)}`,
+        StreamlineErrorCode.Transport,
+        { retryable: true, hint: "Check that the Streamline server is running and accessible" },
+      ));
     });
   }
 
@@ -203,7 +208,11 @@ export class Client {
       await this.wtWriter.write(new Uint8Array(data));
       return;
     }
-    throw new Error("no active transport");
+    throw new StreamlineError(
+      "No active transport — call connect() first",
+      StreamlineErrorCode.Connection,
+      { retryable: true },
+    );
   }
 
   /**
@@ -251,6 +260,7 @@ export class Client {
    * Called internally by {@link Topic.tail} to wire live streaming.
    */
   subscribe(topic: string, callback: (rec: Record) => void): void {
+    validateTopicName(topic);
     let set = this.topicListeners.get(topic);
     if (!set) {
       set = new Set();
@@ -276,11 +286,13 @@ export class Client {
 
   /** Create a {@link Topic} handle bound to this client. */
   topic(name: string): Topic {
+    validateTopicName(name);
     return new Topic(name, this.store, this);
   }
 
   /** Persist a record to IndexedDB; flushed to broker when online. */
   async produce(rec: Omit<Record, "offset"> & { offset?: bigint }): Promise<void> {
+    validateTopicName(rec.topic);
     await this.store.appendPending({ ...rec, offset: rec.offset ?? -1n });
     if (this.connected) {
       this.drainPending().catch(() => {

@@ -1,16 +1,74 @@
 import { describe, it, expect, vi } from "vitest";
-import { Client } from "./index.js";
+import { Client, StreamlineError, StreamlineErrorCode, validateTopicName } from "./index.js";
+
+describe("StreamlineError", () => {
+  it("has code, message, and retryable flag", () => {
+    const err = new StreamlineError("connection lost", StreamlineErrorCode.Connection, {
+      retryable: true,
+      hint: "Check network",
+    });
+    expect(err.code).toBe(StreamlineErrorCode.Connection);
+    expect(err.retryable).toBe(true);
+    expect(err.hint).toBe("Check network");
+    expect(err.message).toBe("connection lost");
+    expect(err.name).toBe("StreamlineError");
+    expect(err).toBeInstanceOf(Error);
+  });
+
+  it("defaults to Unknown code and non-retryable", () => {
+    const err = new StreamlineError("oops");
+    expect(err.code).toBe(StreamlineErrorCode.Unknown);
+    expect(err.retryable).toBe(false);
+    expect(err.hint).toBeUndefined();
+  });
+});
+
+describe("validateTopicName", () => {
+  it("accepts valid topic names", () => {
+    expect(() => validateTopicName("events")).not.toThrow();
+    expect(() => validateTopicName("user.actions")).not.toThrow();
+    expect(() => validateTopicName("my-topic_v2")).not.toThrow();
+    expect(() => validateTopicName("A")).not.toThrow();
+  });
+
+  it("rejects empty topic name", () => {
+    expect(() => validateTopicName("")).toThrow(StreamlineError);
+    expect(() => validateTopicName("")).toThrow(/cannot be empty/);
+  });
+
+  it("rejects '.' and '..' topic names", () => {
+    expect(() => validateTopicName(".")).toThrow(StreamlineError);
+    expect(() => validateTopicName("..")).toThrow(StreamlineError);
+  });
+
+  it("rejects topic names with invalid characters", () => {
+    expect(() => validateTopicName("topic name")).toThrow(/invalid characters/);
+    expect(() => validateTopicName("topic/path")).toThrow(/invalid characters/);
+    expect(() => validateTopicName("topic:name")).toThrow(/invalid characters/);
+  });
+
+  it("rejects topic names exceeding 249 characters", () => {
+    const longName = "a".repeat(250);
+    expect(() => validateTopicName(longName)).toThrow(/maximum length/);
+  });
+
+  it("throws StreamlineError with Configuration code", () => {
+    try {
+      validateTopicName("");
+    } catch (e) {
+      expect(e).toBeInstanceOf(StreamlineError);
+      expect((e as StreamlineError).code).toBe(StreamlineErrorCode.Configuration);
+    }
+  });
+});
 
 describe("Client", () => {
   it("constructs without connecting", () => {
     const c = new Client({ url: "ws://localhost:9092", clientId: "smoke" });
     expect(c).toBeDefined();
-    // No connect(), no socket created — purely covers the constructor path.
   });
 
   it("attempts WebTransport when preferred and available", async () => {
-    // Stub a minimal WebTransport that resolves `ready` but will fail
-    // on createBidirectionalStream so we can assert the path is entered.
     const readyPromise = Promise.resolve();
     const closedPromise = new Promise<{ closeCode: number; reason: string }>(() => {});
     const fakeWT = vi.fn().mockImplementation(() => ({
@@ -39,6 +97,12 @@ describe("Client", () => {
     expect(t.name).toBe("my-topic");
   });
 
+  it("topic() rejects invalid topic names", () => {
+    const c = new Client({ url: "ws://localhost:9092", clientId: "t" });
+    expect(() => c.topic("")).toThrow(StreamlineError);
+    expect(() => c.topic("bad topic")).toThrow(StreamlineError);
+  });
+
   it("produce() queues to IndexedDB pending store", async () => {
     const c = new Client({ url: "ws://localhost:9092", clientId: "drain-test" });
     await c.produce({
@@ -47,8 +111,19 @@ describe("Client", () => {
       value: new TextEncoder().encode("hello"),
       timestampMs: Date.now(),
     });
-    // No throw — record is queued in IndexedDB.
     await c.close();
+  });
+
+  it("produce() rejects invalid topic names", async () => {
+    const c = new Client({ url: "ws://localhost:9092", clientId: "t" });
+    await expect(
+      c.produce({
+        topic: "",
+        partition: 0,
+        value: new TextEncoder().encode("hello"),
+        timestampMs: Date.now(),
+      }),
+    ).rejects.toThrow(StreamlineError);
   });
 
   it("isConnected is false before connect", () => {
