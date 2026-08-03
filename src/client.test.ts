@@ -130,4 +130,105 @@ describe("Client", () => {
     const c = new Client({ url: "ws://localhost:9092", clientId: "c" });
     expect(c.isConnected).toBe(false);
   });
+
+  it("normalizes incoming WebSocket records before dispatch", async () => {
+    const originalWebSocket = globalThis.WebSocket;
+    let socket: FakeWebSocket | undefined;
+    class FakeWebSocket {
+      binaryType = "";
+      onopen: (() => void) | null = null;
+      onmessage: ((event: { data: unknown }) => void) | null = null;
+      onclose: (() => void) | null = null;
+      onerror: ((error: unknown) => void) | null = null;
+      readonly sent: unknown[] = [];
+
+      constructor(_url: string) {
+        socket = this;
+      }
+
+      send(value: unknown): void {
+        this.sent.push(value);
+      }
+
+      close(): void {}
+    }
+
+    (globalThis as Record<string, unknown>).WebSocket = FakeWebSocket;
+    try {
+      const client = new Client({
+        url: "ws://localhost:9092",
+        clientId: "incoming",
+        preferTransport: "websocket",
+      });
+      const connecting = client.connect();
+      socket?.onopen?.();
+      await connecting;
+
+      const received: Array<{
+        topic: string;
+        partition: number;
+        offset: bigint;
+        value: Uint8Array;
+      }> = [];
+      client.subscribe("events", (record) => received.push(record));
+      socket?.onmessage?.({
+        data: JSON.stringify({
+          topic: "events",
+          partition: 2,
+          offset: "42",
+          value: [104, 105],
+          timestampMs: 123,
+        }),
+      });
+
+      expect(received).toHaveLength(1);
+      expect(received[0]?.topic).toBe("events");
+      expect(received[0]?.partition).toBe(2);
+      expect(received[0]?.offset).toBe(42n);
+      expect(Array.from(received[0]?.value ?? [])).toEqual([104, 105]);
+      await client.close();
+    } finally {
+      globalThis.WebSocket = originalWebSocket;
+    }
+  });
+
+  it("ignores malformed incoming WebSocket frames", async () => {
+    const originalWebSocket = globalThis.WebSocket;
+    let socket: FakeWebSocket | undefined;
+    class FakeWebSocket {
+      binaryType = "";
+      onopen: (() => void) | null = null;
+      onmessage: ((event: { data: unknown }) => void) | null = null;
+      onclose: (() => void) | null = null;
+      onerror: ((error: unknown) => void) | null = null;
+
+      constructor(_url: string) {
+        socket = this;
+      }
+
+      send(_value: unknown): void {}
+      close(): void {}
+    }
+
+    (globalThis as Record<string, unknown>).WebSocket = FakeWebSocket;
+    try {
+      const client = new Client({
+        url: "ws://localhost:9092",
+        clientId: "malformed",
+        preferTransport: "websocket",
+      });
+      const connecting = client.connect();
+      socket?.onopen?.();
+      await connecting;
+
+      const listener = vi.fn();
+      client.subscribe("events", listener);
+      socket?.onmessage?.({ data: "{not json" });
+
+      expect(listener).not.toHaveBeenCalled();
+      await client.close();
+    } finally {
+      globalThis.WebSocket = originalWebSocket;
+    }
+  });
 });
