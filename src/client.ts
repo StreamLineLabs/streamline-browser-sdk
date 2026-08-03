@@ -14,6 +14,13 @@ import { LocalStore } from "./storage.js";
 import { Topic } from "./topic.js";
 import type { Record, DrainProgress } from "./types.js";
 import { StreamlineError, StreamlineErrorCode, validateTopicName } from "./types.js";
+import {
+  isObjectRecord,
+  parseBytes,
+  parseHeaders,
+  parseOffset,
+  parseValue,
+} from "./wire.js";
 
 export interface ClientOptions {
   /** ws(s):// or https:// (WebTransport) URL of the broker. */
@@ -373,46 +380,4 @@ export class Client {
   private sleep(ms: number): Promise<void> {
     return new Promise((r) => setTimeout(r, ms));
   }
-}
-
-function isObjectRecord(value: unknown): value is { [key: string]: unknown } {
-  return typeof value === "object" && value !== null;
-}
-
-function parseOffset(value: unknown): bigint {
-  if (typeof value === "bigint" || typeof value === "number" || typeof value === "string") {
-    try {
-      return BigInt(value);
-    } catch {
-      return 0n;
-    }
-  }
-  return 0n;
-}
-
-function parseBytes(value: unknown): Uint8Array | undefined {
-  if (value instanceof Uint8Array) return value;
-  if (value instanceof ArrayBuffer) return new Uint8Array(value);
-  if (Array.isArray(value) && value.every((item) => typeof item === "number")) {
-    return new Uint8Array(value);
-  }
-  return undefined;
-}
-
-function parseValue(value: unknown): Uint8Array {
-  const bytes = parseBytes(value);
-  if (bytes) return bytes;
-
-  const text = typeof value === "string" ? value : JSON.stringify(value) ?? "";
-  return new TextEncoder().encode(text);
-}
-
-function parseHeaders(value: unknown): { [key: string]: string } | undefined {
-  if (!isObjectRecord(value)) return undefined;
-
-  const headers = Object.entries(value);
-  if (!headers.every((entry): entry is [string, string] => typeof entry[1] === "string")) {
-    return undefined;
-  }
-  return Object.fromEntries(headers);
 }
