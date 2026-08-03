@@ -15,6 +15,8 @@ import { Topic } from "./topic.js";
 import type { Record, DrainProgress } from "./types.js";
 import { StreamlineError, StreamlineErrorCode, validateTopicName } from "./types.js";
 import { decodeIncomingRecord } from "./wire.js";
+import type { Transport, TransportKind } from "./transport.js";
+import { WebSocketTransport, WebTransportTransport } from "./transport.js";
 
 export interface ClientOptions {
   /** ws(s):// or https:// (WebTransport) URL of the broker. */
@@ -29,23 +31,13 @@ export interface ClientOptions {
   reconnectDelayMs?: number;
 }
 
-type TransportKind = "webtransport" | "websocket";
-
 /** Callback invoked during pending write drain. */
 export type DrainCallback = (progress: DrainProgress) => void;
 
 export class Client {
-  private socket?: WebSocket;
+  private transport?: Transport;
   private store: LocalStore;
   private opts: ClientOptions;
-
-  /** Active transport type after connect(). */
-  private transportKind?: TransportKind;
-
-  // WebTransport bookkeeping
-  private wtConn?: WebTransport;
-  private wtWriter?: WritableStreamDefaultWriter<Uint8Array>;
-  private wtReader?: ReadableStreamDefaultReader<Uint8Array>;
 
   /** Whether the client currently has a live transport to the broker. */
   private connected = false;
@@ -70,12 +62,12 @@ export class Client {
 
   /** Connect; returns a promise that resolves when the broker handshake completes. */
   async connect(): Promise<void> {
-    const wt = this.opts.preferTransport ?? this.detectTransport();
-    if (wt === "webtransport" && "WebTransport" in globalThis) {
-      await this.connectWebTransport();
-    } else {
-      await this.connectWebSocket();
-    }
+    const transport = this.createTransport(this.opts.preferTransport ?? this.detectTransport());
+    await transport.connect({
+      onFrame: (data) => this.handleIncoming(data),
+      onDisconnect: () => this.handleDisconnect(),
+    });
+    this.transport = transport;
     this.connected = true;
 
     // Drain any writes buffered while offline.
@@ -88,85 +80,12 @@ export class Client {
     return "WebTransport" in globalThis ? "webtransport" : "websocket";
   }
 
-  // --------------------------------------------------------------------------
-  // WebSocket transport
-  // --------------------------------------------------------------------------
-
-  private connectWebSocket(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const url = this.opts.url.replace(/^http/, "ws");
-      const sock = new WebSocket(url);
-      sock.binaryType = "arraybuffer";
-      sock.onopen = () => {
-        if (this.opts.token) {
-          sock.send(JSON.stringify({ type: "auth", token: this.opts.token }));
-        }
-        this.socket = sock;
-        this.transportKind = "websocket";
-
-        sock.onmessage = (event: MessageEvent<unknown>) => {
-          if (typeof event.data === "string" || event.data instanceof ArrayBuffer) {
-            this.handleIncoming(event.data);
-          }
-        };
-        sock.onclose = () => this.handleDisconnect();
-
-        resolve();
-      };
-      sock.onerror = (e) => reject(new StreamlineError(
-        `WebSocket connection failed: ${String(e)}`,
-        StreamlineErrorCode.Transport,
-        { retryable: true, hint: "Check that the Streamline server is running and accessible" },
-      ));
-    });
-  }
-
-  // --------------------------------------------------------------------------
-  // WebTransport transport
-  // --------------------------------------------------------------------------
-
-  /**
-   * Open a WebTransport session to the broker, create a bidirectional stream
-   * for the Streamline wire protocol, and send the auth token if configured.
-   */
-  private async connectWebTransport(): Promise<void> {
-    const WT = (globalThis as unknown as { WebTransport: typeof WebTransport }).WebTransport;
-    const conn = new WT(this.opts.url);
-    await conn.ready;
-    this.wtConn = conn;
-
-    const bidi = await conn.createBidirectionalStream();
-    this.wtWriter = bidi.writable.getWriter();
-    this.wtReader = bidi.readable.getReader();
-
-    if (this.opts.token) {
-      const authFrame = new TextEncoder().encode(
-        JSON.stringify({ type: "auth", token: this.opts.token }),
-      );
-      await this.wtWriter.write(authFrame);
+  /** Instantiate the transport implementation for the resolved transport kind. */
+  private createTransport(kind: TransportKind): Transport {
+    if (kind === "webtransport" && "WebTransport" in globalThis) {
+      return new WebTransportTransport(this.opts.url, this.opts.token);
     }
-
-    this.transportKind = "webtransport";
-
-    // Start background read loop for incoming records.
-    void this.readWebTransportLoop();
-
-    // Auto-reconnect when the session closes.
-    void conn.closed.then(() => this.handleDisconnect()).catch(() => this.handleDisconnect());
-  }
-
-  /** Continuously read from the WebTransport bidi stream and dispatch. */
-  private async readWebTransportLoop(): Promise<void> {
-    if (!this.wtReader) return;
-    try {
-      for (;;) {
-        const { value, done } = await this.wtReader.read();
-        if (done) break;
-        this.handleIncoming(value.buffer as ArrayBuffer);
-      }
-    } catch {
-      // Stream broken — handled via handleDisconnect.
-    }
+    return new WebSocketTransport(this.opts.url, this.opts.token);
   }
 
   // --------------------------------------------------------------------------
@@ -205,19 +124,14 @@ export class Client {
    * Throws if no transport is connected.
    */
   async send(data: ArrayBuffer): Promise<void> {
-    if (this.transportKind === "websocket" && this.socket) {
-      this.socket.send(data);
-      return;
+    if (!this.transport) {
+      throw new StreamlineError(
+        "No active transport — call connect() first",
+        StreamlineErrorCode.Connection,
+        { retryable: true },
+      );
     }
-    if (this.transportKind === "webtransport" && this.wtWriter) {
-      await this.wtWriter.write(new Uint8Array(data));
-      return;
-    }
-    throw new StreamlineError(
-      "No active transport — call connect() first",
-      StreamlineErrorCode.Connection,
-      { retryable: true },
-    );
+    await this.transport.send(data);
   }
 
   /**
@@ -340,13 +254,7 @@ export class Client {
   async close(): Promise<void> {
     this.connected = false;
     this.reconnecting = true; // prevent reconnect after close
-    this.socket?.close();
-    try {
-      await this.wtWriter?.close();
-    } catch { /* already closed */ }
-    try {
-      this.wtConn?.close();
-    } catch { /* already closed */ }
+    await this.transport?.close();
     await this.store.close();
   }
 
