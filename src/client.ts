@@ -103,7 +103,11 @@ export class Client {
         this.socket = sock;
         this.transportKind = "websocket";
 
-        sock.onmessage = (ev: MessageEvent) => this.handleIncoming(ev.data);
+        sock.onmessage = (event: MessageEvent<unknown>) => {
+          if (typeof event.data === "string" || event.data instanceof ArrayBuffer) {
+            this.handleIncoming(event.data);
+          }
+        };
         sock.onclose = () => this.handleDisconnect();
 
         resolve();
@@ -144,10 +148,10 @@ export class Client {
     this.transportKind = "webtransport";
 
     // Start background read loop for incoming records.
-    this.readWebTransportLoop();
+    void this.readWebTransportLoop();
 
     // Auto-reconnect when the session closes.
-    conn.closed.then(() => this.handleDisconnect()).catch(() => this.handleDisconnect());
+    void conn.closed.then(() => this.handleDisconnect()).catch(() => this.handleDisconnect());
   }
 
   /** Continuously read from the WebTransport bidi stream and dispatch. */
@@ -172,7 +176,7 @@ export class Client {
     this.connected = false;
     if (this.reconnecting) return;
     this.reconnecting = true;
-    this.autoReconnect();
+    void this.autoReconnect();
   }
 
   private async autoReconnect(): Promise<void> {
@@ -222,22 +226,18 @@ export class Client {
   private handleIncoming(data: ArrayBuffer | string): void {
     try {
       const text = typeof data === "string" ? data : new TextDecoder().decode(data);
-      const parsed = JSON.parse(text);
+      const parsed: unknown = JSON.parse(text);
+      if (!isObjectRecord(parsed)) return;
 
       // Normalise into a Record.
       const rec: Record = {
-        topic: parsed.topic ?? "",
-        partition: parsed.partition ?? 0,
-        offset: BigInt(parsed.offset ?? 0),
-        key: parsed.key ? new Uint8Array(parsed.key) : undefined,
-        value:
-          parsed.value instanceof Uint8Array
-            ? parsed.value
-            : new TextEncoder().encode(
-                typeof parsed.value === "string" ? parsed.value : JSON.stringify(parsed.value),
-              ),
-        timestampMs: parsed.timestampMs ?? Date.now(),
-        headers: parsed.headers,
+        topic: typeof parsed.topic === "string" ? parsed.topic : "",
+        partition: typeof parsed.partition === "number" ? parsed.partition : 0,
+        offset: parseOffset(parsed.offset),
+        key: parseBytes(parsed.key),
+        value: parseValue(parsed.value),
+        timestampMs: typeof parsed.timestampMs === "number" ? parsed.timestampMs : Date.now(),
+        headers: parseHeaders(parsed.headers),
       };
 
       const listeners = this.topicListeners.get(rec.topic);
@@ -357,7 +357,7 @@ export class Client {
     this.reconnecting = true; // prevent reconnect after close
     this.socket?.close();
     try {
-      this.wtWriter?.close();
+      await this.wtWriter?.close();
     } catch { /* already closed */ }
     try {
       this.wtConn?.close();
@@ -373,4 +373,46 @@ export class Client {
   private sleep(ms: number): Promise<void> {
     return new Promise((r) => setTimeout(r, ms));
   }
+}
+
+function isObjectRecord(value: unknown): value is { [key: string]: unknown } {
+  return typeof value === "object" && value !== null;
+}
+
+function parseOffset(value: unknown): bigint {
+  if (typeof value === "bigint" || typeof value === "number" || typeof value === "string") {
+    try {
+      return BigInt(value);
+    } catch {
+      return 0n;
+    }
+  }
+  return 0n;
+}
+
+function parseBytes(value: unknown): Uint8Array | undefined {
+  if (value instanceof Uint8Array) return value;
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (Array.isArray(value) && value.every((item) => typeof item === "number")) {
+    return new Uint8Array(value);
+  }
+  return undefined;
+}
+
+function parseValue(value: unknown): Uint8Array {
+  const bytes = parseBytes(value);
+  if (bytes) return bytes;
+
+  const text = typeof value === "string" ? value : JSON.stringify(value) ?? "";
+  return new TextEncoder().encode(text);
+}
+
+function parseHeaders(value: unknown): { [key: string]: string } | undefined {
+  if (!isObjectRecord(value)) return undefined;
+
+  const headers = Object.entries(value);
+  if (!headers.every((entry): entry is [string, string] => typeof entry[1] === "string")) {
+    return undefined;
+  }
+  return Object.fromEntries(headers);
 }

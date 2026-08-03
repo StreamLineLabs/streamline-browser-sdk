@@ -114,6 +114,13 @@ function serialize(rec: Record): unknown {
   return { ...rec, offset: rec.offset.toString() };
 }
 
-function deserialize(raw: any): Record {
-  return { ...raw, offset: BigInt(raw.offset) };
+function deserialize(raw: unknown): Record {
+  if (typeof raw !== "object" || raw === null || !("offset" in raw)) {
+    throw new TypeError("Stored record is missing an offset");
+  }
+
+  const stored = raw as Omit<Record, "offset"> & {
+    offset: string | number | bigint;
+  };
+  return { ...stored, offset: BigInt(stored.offset) };
 }
