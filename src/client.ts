@@ -14,13 +14,7 @@ import { LocalStore } from "./storage.js";
 import { Topic } from "./topic.js";
 import type { Record, DrainProgress } from "./types.js";
 import { StreamlineError, StreamlineErrorCode, validateTopicName } from "./types.js";
-import {
-  isObjectRecord,
-  parseBytes,
-  parseHeaders,
-  parseOffset,
-  parseValue,
-} from "./wire.js";
+import { decodeIncomingRecord } from "./wire.js";
 
 export interface ClientOptions {
   /** ws(s):// or https:// (WebTransport) URL of the broker. */
@@ -231,30 +225,14 @@ export class Client {
    * Expects a JSON-encoded record envelope.
    */
   private handleIncoming(data: ArrayBuffer | string): void {
-    try {
-      const text = typeof data === "string" ? data : new TextDecoder().decode(data);
-      const parsed: unknown = JSON.parse(text);
-      if (!isObjectRecord(parsed)) return;
+    const record = decodeIncomingRecord(data);
+    if (!record) return;
 
-      // Normalise into a Record.
-      const rec: Record = {
-        topic: typeof parsed.topic === "string" ? parsed.topic : "",
-        partition: typeof parsed.partition === "number" ? parsed.partition : 0,
-        offset: parseOffset(parsed.offset),
-        key: parseBytes(parsed.key),
-        value: parseValue(parsed.value),
-        timestampMs: typeof parsed.timestampMs === "number" ? parsed.timestampMs : Date.now(),
-        headers: parseHeaders(parsed.headers),
-      };
-
-      const listeners = this.topicListeners.get(rec.topic);
-      if (listeners) {
-        for (const cb of listeners) {
-          cb(rec);
-        }
+    const listeners = this.topicListeners.get(record.topic);
+    if (listeners) {
+      for (const callback of listeners) {
+        callback(record);
       }
-    } catch {
-      // Malformed frame — silently ignore.
     }
   }
 

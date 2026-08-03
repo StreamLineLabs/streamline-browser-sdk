@@ -1,3 +1,25 @@
+import type { Record } from "./types.js";
+
+export function decodeIncomingRecord(data: ArrayBuffer | string): Record | undefined {
+  try {
+    const text = typeof data === "string" ? data : new TextDecoder().decode(data);
+    const parsed: unknown = JSON.parse(text);
+    if (!isObjectRecord(parsed)) return undefined;
+
+    return {
+      topic: typeof parsed.topic === "string" ? parsed.topic : "",
+      partition: typeof parsed.partition === "number" ? parsed.partition : 0,
+      offset: parseOffset(parsed.offset),
+      key: parseBytes(parsed.key),
+      value: parseValue(parsed.value),
+      timestampMs: typeof parsed.timestampMs === "number" ? parsed.timestampMs : Date.now(),
+      headers: parseHeaders(parsed.headers),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 export function isObjectRecord(value: unknown): value is { [key: string]: unknown } {
   return typeof value === "object" && value !== null;
 }
