@@ -1,34 +1,58 @@
 # Security Policy
 
-## Supported Versions
+## Supported versions
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 0.2.x   | :white_check_mark: |
-| < 0.2   | :x:                |
+This SDK is experimental and does not yet have a long-term-support release
+line. Security fixes are applied to the current `0.4.x` line only.
 
-## Reporting a Vulnerability
+| Version | Supported |
+| --- | --- |
+| 0.4.x | Yes |
+| 0.3.x and earlier | No |
 
-Please report security vulnerabilities to **security@streamlinelabs.dev**.
+Upgrade to the latest `0.4.x` patch before reporting an issue. Browser runtime
+compatibility is capability-based and is not a tested security-support matrix;
+see [README.md](README.md#runtime-requirements).
 
-**Do NOT open public issues for security vulnerabilities.**
+## Reporting a vulnerability
 
-### What to Include
+Report suspected vulnerabilities privately to **security@streamlinelabs.dev**.
 
-- Description of the vulnerability
-- Steps to reproduce
-- Potential impact
-- Suggested fix (if any)
+Do not open a public issue, discussion, or pull request containing vulnerability
+details before coordinated disclosure.
 
-### Response Timeline
+Include:
 
-- **Acknowledgment**: Within 48 hours
-- **Initial Assessment**: Within 5 business days
-- **Fix Timeline**: Communicated after assessment
+- A description of the vulnerability and affected SDK version
+- Browser/runtime and transport details
+- Reproduction steps or a minimal proof of concept
+- Potential impact and required attacker capabilities
+- Any suggested mitigation or fix
 
-We follow responsible disclosure practices and will credit reporters (with permission) in our release notes.
+The maintainers aim to acknowledge reports within 48 hours and provide an
+initial assessment within five business days. Remediation and disclosure timing
+depend on severity, affected components, and coordination with the reporter.
 
-## Security Best Practices
+## Security boundaries
 
-For production deployments, please review the [Streamline Security Documentation](https://github.com/streamlinelabs/streamline-docs).
+- Use `wss://` or `https://` endpoints outside controlled local development.
+- Browser tokens are readable by JavaScript running in the same page. Use
+  short-lived, least-privilege credentials and a restrictive Content Security
+  Policy; do not embed administrative or signing credentials.
+- WebSocket authentication is sent as the first application frame.
+  `Client.connect()` confirms only that the browser transport opened; it does
+  not confirm server acceptance of the token.
+- IndexedDB data is origin-accessible and is not encrypted by this SDK. Encrypt
+  sensitive payloads before queueing them and keep keys separate from stored
+  ciphertext.
+- Pending records are removed after browser transport handoff. The SDK has no
+  broker acknowledgement, delivery receipt, deduplication, or exactly-once
+  protocol.
+- `LWWRegister` is an in-memory merge primitive. It does not authenticate peers
+  or synchronize state.
+- Moonshot browser clients intentionally expose read-only operations. Route
+  administrative, signing, mutation, and privileged write operations through a
+  server-side gateway.
 
+Applications are responsible for endpoint authorization, token issuance,
+cross-origin policy, payload validation, abuse controls, and data retention.

@@ -1,44 +1,102 @@
 name: Publish Browser SDK
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - "v*"
 
 permissions:
   contents: read
 
+concurrency:
+  group: publish-${{ github.ref_name }}
+  cancel-in-progress: false
+
 jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Validate tag and package versions
+        run: npm run check:release -- "$RELEASE_TAG"
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+
+  quality:
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Run quality, example, package, and SBOM gates
+        run: npm run check
+
+  integration:
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Run live integration gate
+        run: npm run test:integration
+
   publish:
+    needs: [validate, quality, integration]
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          registry-url: 'https://registry.npmjs.org'
+          ref: ${{ github.sha }}
 
-      - run: npm ci
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
 
-      - run: npm test
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
 
-      - run: npm run build
-
-      # Size budget check — browser SDK must stay under 200KB
-      - name: Check bundle size
-        run: |
-          SIZE=$(stat -c%s dist/index.js 2>/dev/null || stat -f%z dist/index.js)
-          MAX=204800  # 200KB
-          echo "Bundle size: $SIZE bytes (max: $MAX bytes)"
-          if [ "$SIZE" -gt "$MAX" ]; then
-            echo "::error::Bundle too large: $SIZE > $MAX bytes"
-            exit 1
-          fi
-          echo "✓ Bundle size within budget"
-
-      - run: npm publish --access public
+      - name: Publish with npm provenance
+        run: npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -6,16 +6,27 @@
 [![Docs](https://img.shields.io/badge/docs-streamlinelabs.dev-blue.svg)](https://streamlinelabs.dev/docs/sdks/browser)
 [![Release](https://img.shields.io/github/v/release/streamlinelabs/streamline-browser-sdk?label=release)](https://github.com/streamlinelabs/streamline-browser-sdk/releases)
 
-> ⚠️ **Experimental (M3)** — This SDK is part of the Edge & CRDT moonshot. APIs may change between releases.
+> ⚠️ **Experimental (M3)** — APIs and the browser wire contract may change between releases.
 
-Browser client SDK for [Streamline](https://github.com/streamlinelabs/streamline) — *The Redis of Streaming*.
-Produce and consume directly from the browser via WebSocket/WebTransport, with IndexedDB persistence and CRDT sync.
+An ESM-only browser client for Streamline with WebSocket/WebTransport transports,
+an IndexedDB-backed outbound queue, topic handles, and standalone CRDT
+primitives.
 
-## Requirements
+## Runtime requirements
 
-- Modern browser (Chrome 114+, Firefox 113+, Safari 16.4+)
-- Node.js 18+ (for build tooling)
-- Streamline server 0.2.0 or later
+The package targets browser applications. It requires:
+
+- IndexedDB, `TextEncoder`, `TextDecoder`, and `BigInt`
+- WebSocket, or WebTransport when explicitly preferred and available
+- `fetch` and `AbortController` only when using the Moonshot HTTP clients
+
+Node.js 18+ is supported for development tooling, not as a production SDK
+runtime.
+
+No browser/version compatibility matrix or Streamline server-version matrix is
+currently verified in CI. This repository also has no validated
+browser-compatible Streamline server fixture. A raw Kafka TCP endpoint is not
+sufficient.
 
 ## Installation
 
@@ -23,140 +34,183 @@ Produce and consume directly from the browser via WebSocket/WebTransport, with I
 npm install @streamlinelabs/browser-sdk
 ```
 
-## Quick Start
+## Quick start
 
+`Client.connect()` resolves when the browser transport opens. It does not wait
+for an authentication acknowledgement or broker-level readiness response.
+
+<!-- example: examples/quick-start.ts -->
 ```typescript
-import { StreamlineBrowser } from '@streamlinelabs/browser-sdk';
+import { Client } from "@streamlinelabs/browser-sdk";
 
-const client = new StreamlineBrowser('ws://localhost:9092', {
-  authToken: 'my-token',
+const client = new Client({
+  url: "wss://streamline.example.com/browser",
+  clientId: "checkout-ui",
+  preferTransport: "websocket",
 });
+const events = client.topic("events");
 
 await client.connect();
 
-// Produce a message
-await client.produce('events', { action: 'click', page: '/home' });
-
-// Consume messages
-client.subscribe('events', (message) => {
-  console.log('Received:', message.value);
-});
-
-// Disconnect when done
-client.disconnect();
+try {
+  await events.append({
+    key: "page:/home",
+    value: { action: "click", page: "/home" },
+  });
+  console.log("The record was written to the local pending queue.");
+} finally {
+  await client.close();
+}
 ```
 
-## Features
+`Topic.append()` first commits the record to the client's IndexedDB pending
+queue. When connected, a background drain attempts to hand queued records to
+the selected browser transport.
 
-- **WebSocket & WebTransport** — dual-transport with automatic fallback
-- **IndexedDB persistence** — messages survive page reloads and browser restarts
-- **CRDT sync** — automatic conflict-free merge on reconnect
-- **Offline-first** — produce while offline, sync when connectivity returns
-- **Lightweight** — small bundle size suitable for browser environments
-- **TypeScript-first** — full type safety with comprehensive type definitions
+**There is currently no broker acknowledgement protocol in this SDK.** A
+pending record is removed after `WebSocket.send()` returns or a WebTransport
+writer accepts the frame. This is not acknowledgement-backed durability,
+delivery confirmation, or exactly-once delivery. Applications that require
+those guarantees must wait for a future acknowledged protocol or implement
+confirmation through an application-specific server API.
 
-## Moonshot Features
+## Public API
 
-### CRDT Sync (M3)
+### Client and Topic
 
-Streamline's browser SDK uses CRDTs (Conflict-free Replicated Data Types) to enable seamless offline-first workflows. State changes made offline are automatically merged when the client reconnects — no manual conflict resolution needed.
+- `new Client({ url, clientId, token?, preferTransport?, reconnectDelayMs? })`
+- `client.connect()`, `client.close()`, and `client.isConnected`
+- `client.topic(name)` returns a `Topic`
+- `topic.append({ key?, value })` queues an outbound record
+- `topic.consume()` reads the local `records` object store only
+- `topic.tail()` replays that local store and then waits for compatible
+  incoming frames already delivered by the transport
 
+The client currently populates the pending outbound store but does not
+automatically persist incoming records into the local `records` store.
+Consequently, `consume()` and the replay phase of `tail()` return records only
+if that store was populated by compatible application or migration code.
+`tail()` does not send a broker subscription command, so it must not be treated
+as a working server-side consume round trip.
+
+### LocalStore
+
+`LocalStore` is exported for applications that need direct access to the
+IndexedDB pending queue. Its records use `Uint8Array` payloads and `bigint`
+offsets.
+
+<!-- example: examples/local-store.ts -->
 ```typescript
-import { StreamlineBrowser, CrdtMap } from '@streamlinelabs/browser-sdk';
+import {
+  LocalStore,
+  type Record as StreamlineRecord,
+} from "@streamlinelabs/browser-sdk";
 
-const client = new StreamlineBrowser('ws://localhost:9092');
-await client.connect();
+const store = new LocalStore("my-app-streamline");
+const record: StreamlineRecord = {
+  topic: "events",
+  partition: 0,
+  offset: -1n,
+  value: new TextEncoder().encode("queued"),
+  timestampMs: Date.now(),
+};
 
-// Create a CRDT-backed map that syncs across clients
-const preferences = new CrdtMap(client, 'user-preferences');
-
-// Set values — works offline, merges on reconnect
-preferences.set('theme', 'dark');
-preferences.set('language', 'en');
-
-// Listen for remote changes
-preferences.on('change', (key, value) => {
-  console.log(`${key} updated to ${value}`);
-});
-
-// Get current merged state
-const theme = preferences.get('theme');
+await store.appendPending(record);
+const pending = await store.getPending();
+console.log(`Queued records: ${pending.length}`);
+await store.close();
 ```
 
-### WebTransport
+Directly removing pending entries has the same limitation as the client drain:
+the store itself has no broker acknowledgement concept.
 
-When available, the SDK uses WebTransport for lower-latency, multiplexed streaming. Falls back to WebSocket automatically.
+### LWWRegister
 
+`LWWRegister` is an in-memory Last-Writer-Wins register using Hybrid Logical
+Clock timestamps. It does not connect to `Client`, persist itself, discover
+peers, or synchronize automatically. Applications must transport snapshots and
+call `merge()` explicitly.
+
+<!-- example: examples/lww-register.ts -->
 ```typescript
-const client = new StreamlineBrowser('https://localhost:9092', {
-  transport: 'webtransport', // 'websocket' | 'webtransport' | 'auto'
-});
+import { LWWRegister } from "@streamlinelabs/browser-sdk";
+
+const browserA = new LWWRegister<string>("browser-a");
+browserA.set("dark");
+
+const value = browserA.get();
+if (value !== undefined) {
+  const browserB = new LWWRegister<string>("browser-b");
+  const result = browserB.merge({
+    value,
+    timestamp: browserA.timestamp,
+  });
+
+  console.log(result.chosen, browserB.get());
+}
 ```
 
-### Offline-First Usage
+## Transport and offline behavior
 
-Messages produced while offline are buffered in IndexedDB and delivered when connectivity returns.
+- Automatic selection chooses WebTransport when the global API exists;
+  otherwise it chooses WebSocket.
+- Explicit WebTransport preference falls back to WebSocket when WebTransport
+  is unavailable.
+- Reconnection retries indefinitely with exponential backoff, up to 30 seconds
+  between attempts.
+- Outbound records can be queued while disconnected and survive reloads in
+  IndexedDB.
+- Queue draining is best-effort and has no broker acknowledgement, delivery
+  receipt, deduplication, or exactly-once guarantee.
+- CRDT merging is a separate local primitive; reconnecting does not trigger
+  CRDT synchronization.
 
-```typescript
-const client = new StreamlineBrowser('ws://localhost:9092', {
-  offline: {
-    enabled: true,
-    maxQueueSize: 10_000,   // Max buffered messages
-    storeName: 'my-app',    // IndexedDB store name
-  },
-});
+## Security considerations
 
-await client.connect();
+- Use `wss://` or `https://` endpoints in production. Plaintext examples are
+  suitable only for controlled local development.
+- A configured token is available to page JavaScript and is sent in the first
+  application-level transport frame. Use short-lived, least-privilege browser
+  credentials and a restrictive Content Security Policy.
+- `connect()` does not verify that the server accepted the token.
+- IndexedDB contents are not encrypted by this package. Do not queue secrets or
+  sensitive payloads unless the application encrypts them first and manages
+  keys outside the stored data.
+- The Moonshot browser clients intentionally expose read-only search and memory
+  recall operations. Keep administrative, signing, and write credentials in a
+  server-side gateway.
 
-// This works even when disconnected
-await client.produce('user-actions', { action: 'save-draft', content: '...' });
-
-// Check connection state
-client.on('stateChange', (state) => {
-  console.log(`Connection: ${state}`); // 'connected' | 'disconnected' | 'syncing'
-});
-```
-
-### Edge Sync
-
-Synchronize topics between edge devices, browsers, and the central Streamline cluster.
-
-```typescript
-const client = new StreamlineBrowser('ws://edge-node.local:9092', {
-  sync: {
-    topics: ['user-preferences', 'offline-actions'],
-    mergePolicy: 'last-writer-wins',
-    syncInterval: 5000, // ms
-  },
-});
-
-await client.connect();
-
-// Subscribe to sync status
-client.on('syncComplete', (topic, stats) => {
-  console.log(`${topic}: merged ${stats.merged} records, conflicts=${stats.conflicts}`);
-});
-```
+See [SECURITY.md](SECURITY.md) for supported release lines and vulnerability
+reporting.
 
 ## Development
 
 ```bash
-# Install dependencies
-npm install
-
-# Build
-npm run build
-
-# Run tests
-npm test
-
-# Type checking
+npm ci
+npm run lint
 npm run typecheck
+npm test
+npm run build
+npm run check
 ```
+
+This repository has no validated browser-protocol fixture or live test suite.
+The integration command therefore fails intentionally:
+
+```bash
+npm run test:integration
+```
+
+Opening a WebSocket and returning from `send()` is not accepted as an
+integration result because it cannot prove authentication, server acceptance,
+subscription behavior, or acknowledgement. The release workflow remains
+blocked until an explicit compatible suite verifies those semantics and fails
+on server errors, rejected authentication, missing acknowledgements,
+disconnects, and timeouts. The command never falls back to unit tests.
 
 ## Contributing
 
-Contributions are welcome! This is a community-maintained SDK. Please see the [organization contributing guide](https://github.com/streamlinelabs/.github/blob/main/CONTRIBUTING.md) for guidelines.
+Contributions are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

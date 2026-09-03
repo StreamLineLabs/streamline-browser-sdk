@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -30,8 +33,24 @@ jobs:
       - name: Type check
         run: npm run typecheck
 
+      - name: Release validation tests
+        run: npm run test:release
+
+      - name: Validate package metadata
+        run: npm run check:metadata
+
       - name: Build
         run: npm run build
 
+      - name: Compile published examples
+        run: npm run check:examples
+
+      - name: Inspect package contents
+        run: node scripts/check-package.mjs
+
       - name: Test
         run: npm test
+
+      - name: Validate generated SBOM
+        if: matrix.node == 22
+        run: npm run check:sbom
