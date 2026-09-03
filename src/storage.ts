@@ -5,8 +5,8 @@ import type { Record } from "./types.js";
  *
  * Schema:
  *   * Object store `records` keyed by `[topic, partition, offset]`.
- *   * Object store `pending` keyed by auto-incrementing id (writes that
- *     haven't been ack'd by the broker yet).
+ *   * Object store `pending` keyed by auto-incrementing id (writes that have
+ *     not yet been handed to the selected browser transport).
  */
 export class LocalStore {
   private dbPromise: Promise<IDBDatabase>;
@@ -92,7 +92,8 @@ export class LocalStore {
 
   /**
    * Remove a single pending record by its auto-increment key.
-   * Called after a pending write has been ack'd by the broker.
+   * Called after a pending write has been handed to the browser transport.
+   * The current wire protocol has no broker acknowledgement.
    */
   async removePending(key: IDBValidKey): Promise<void> {
     const db = await this.dbPromise;

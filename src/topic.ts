@@ -22,15 +22,18 @@ export class Topic {
   }
 
   // --------------------------------------------------------------------------
-  // append — write a record (online ⇒ send, offline ⇒ queue)
+  // append — persist a record and schedule transport handoff when online
   // --------------------------------------------------------------------------
 
   /**
    * Append a record to this topic.
    *
-   * If the client is connected the record is sent immediately and also
-   * buffered locally. When offline it is written to the IndexedDB pending
-   * store and will be drained on the next successful connect.
+   * The record is first written to the IndexedDB pending store. If the client
+   * is connected, a background drain attempts to hand it to the transport;
+   * otherwise it remains queued until a later successful connection.
+   *
+   * Resolution confirms the local IndexedDB write, not broker acknowledgement
+   * or delivery.
    *
    * @param entry.key   Optional record key (UTF-8 string convenience).
    * @param entry.value Arbitrary payload — objects are JSON-serialized,

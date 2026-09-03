@@ -9,6 +9,11 @@ import { StreamlineError } from "./types.js";
 class FakeWebSocket {
   static instances: FakeWebSocket[] = [];
 
+  static readonly CONNECTING = 0;
+  static readonly OPEN = 1;
+  static readonly CLOSING = 2;
+  static readonly CLOSED = 3;
+
   binaryType = "";
   onopen: (() => void) | null = null;
   onmessage: ((event: { data: unknown }) => void) | null = null;
@@ -16,9 +21,23 @@ class FakeWebSocket {
   onerror: ((error: unknown) => void) | null = null;
   readonly sent: unknown[] = [];
   closed = false;
+  /** Mirrors the real WebSocket readyState state machine; starts CONNECTING. */
+  readyState: number = FakeWebSocket.CONNECTING;
 
   constructor(public readonly url: string) {
     FakeWebSocket.instances.push(this);
+  }
+
+  /** Simulate the browser transitioning the socket to OPEN and firing `open`. */
+  open(): void {
+    this.readyState = FakeWebSocket.OPEN;
+    this.onopen?.();
+  }
+
+  /** Simulate a server/network-initiated close (readyState flips before the event fires). */
+  simulateClose(): void {
+    this.readyState = FakeWebSocket.CLOSED;
+    this.onclose?.();
   }
 
   send(value: unknown): void {
@@ -27,6 +46,7 @@ class FakeWebSocket {
 
   close(): void {
     this.closed = true;
+    this.readyState = FakeWebSocket.CLOSED;
   }
 }
 
@@ -39,7 +59,7 @@ describe("WebSocketTransport", () => {
     const sock = FakeWebSocket.instances[0]!;
     expect(sock.url).toBe("wss://broker.example:9092");
     expect(sock.binaryType).toBe("arraybuffer");
-    sock.onopen?.();
+    sock.open();
     await connecting;
     delete (globalThis as Record<string, unknown>).WebSocket;
   });
@@ -50,7 +70,7 @@ describe("WebSocketTransport", () => {
     const transport = new WebSocketTransport("ws://broker:9092", "secret-token");
     const connecting = transport.connect({ onFrame: vi.fn(), onDisconnect: vi.fn() });
     const sock = FakeWebSocket.instances[0]!;
-    sock.onopen?.();
+    sock.open();
     await connecting;
 
     expect(sock.sent).toEqual([JSON.stringify({ type: "auth", token: "secret-token" })]);
@@ -63,7 +83,7 @@ describe("WebSocketTransport", () => {
     const transport = new WebSocketTransport("ws://broker:9092");
     const connecting = transport.connect({ onFrame: vi.fn(), onDisconnect: vi.fn() });
     const sock = FakeWebSocket.instances[0]!;
-    sock.onopen?.();
+    sock.open();
     await connecting;
 
     expect(sock.sent).toEqual([]);
@@ -77,7 +97,7 @@ describe("WebSocketTransport", () => {
     const transport = new WebSocketTransport("ws://broker:9092");
     const connecting = transport.connect({ onFrame, onDisconnect: vi.fn() });
     const sock = FakeWebSocket.instances[0]!;
-    sock.onopen?.();
+    sock.open();
     await connecting;
 
     const buf = new ArrayBuffer(4);
@@ -99,10 +119,10 @@ describe("WebSocketTransport", () => {
     const transport = new WebSocketTransport("ws://broker:9092");
     const connecting = transport.connect({ onFrame: vi.fn(), onDisconnect });
     const sock = FakeWebSocket.instances[0]!;
-    sock.onopen?.();
+    sock.open();
     await connecting;
 
-    sock.onclose?.();
+    sock.simulateClose();
     expect(onDisconnect).toHaveBeenCalledTimes(1);
     delete (globalThis as Record<string, unknown>).WebSocket;
   });
@@ -126,7 +146,7 @@ describe("WebSocketTransport", () => {
     const transport = new WebSocketTransport("ws://broker:9092");
     const connecting = transport.connect({ onFrame: vi.fn(), onDisconnect: vi.fn() });
     const sock = FakeWebSocket.instances[0]!;
-    sock.onopen?.();
+    sock.open();
     await connecting;
 
     const payload = new ArrayBuffer(8);
@@ -141,7 +161,7 @@ describe("WebSocketTransport", () => {
     const transport = new WebSocketTransport("ws://broker:9092");
     const connecting = transport.connect({ onFrame: vi.fn(), onDisconnect: vi.fn() });
     const sock = FakeWebSocket.instances[0]!;
-    sock.onopen?.();
+    sock.open();
     await connecting;
 
     await transport.close();
@@ -149,14 +169,117 @@ describe("WebSocketTransport", () => {
     delete (globalThis as Record<string, unknown>).WebSocket;
   });
 
-  it("send() before connect() is a no-op (no throw)", async () => {
+  it("send() before connect() rejects (fail closed — no socket to hand the frame to)", async () => {
     const transport = new WebSocketTransport("ws://broker:9092");
-    await expect(transport.send(new ArrayBuffer(1))).resolves.toBeUndefined();
+    await expect(transport.send(new ArrayBuffer(1))).rejects.toThrow(StreamlineError);
+    await expect(transport.send(new ArrayBuffer(1))).rejects.toThrow(/not open/);
   });
 
   it("close() before connect() is a no-op (no throw)", async () => {
     const transport = new WebSocketTransport("ws://broker:9092");
     await expect(transport.close()).resolves.toBeUndefined();
+  });
+
+  it("send() rejects once the socket has closed, even though the reference is still held", async () => {
+    (globalThis as Record<string, unknown>).WebSocket = FakeWebSocket;
+    FakeWebSocket.instances = [];
+    const transport = new WebSocketTransport("ws://broker:9092");
+    const connecting = transport.connect({ onFrame: vi.fn(), onDisconnect: vi.fn() });
+    const sock = FakeWebSocket.instances[0]!;
+    sock.open();
+    await connecting;
+
+    // Server/network closes the socket without the transport being told to close.
+    sock.readyState = FakeWebSocket.CLOSED;
+
+    await expect(transport.send(new ArrayBuffer(4))).rejects.toThrow(StreamlineError);
+    await expect(transport.send(new ArrayBuffer(4))).rejects.toThrow(/not open/);
+    delete (globalThis as Record<string, unknown>).WebSocket;
+  });
+
+  it("send() rejects while the socket is still CONNECTING (readyState checked at the send point)", async () => {
+    (globalThis as Record<string, unknown>).WebSocket = FakeWebSocket;
+    FakeWebSocket.instances = [];
+    const transport = new WebSocketTransport("ws://broker:9092");
+    // Deliberately never invoke sock.open() — the socket stays CONNECTING and
+    // this.socket is never assigned by the transport.
+    void transport.connect({ onFrame: vi.fn(), onDisconnect: vi.fn() });
+
+    await expect(transport.send(new ArrayBuffer(2))).rejects.toThrow(/not open/);
+    delete (globalThis as Record<string, unknown>).WebSocket;
+  });
+
+  it("send() rejects after close(), and never reaches the underlying socket", async () => {
+    (globalThis as Record<string, unknown>).WebSocket = FakeWebSocket;
+    FakeWebSocket.instances = [];
+    const transport = new WebSocketTransport("ws://broker:9092");
+    const connecting = transport.connect({ onFrame: vi.fn(), onDisconnect: vi.fn() });
+    const sock = FakeWebSocket.instances[0]!;
+    sock.open();
+    await connecting;
+
+    await transport.close();
+    sock.sent.length = 0; // clear the (absent) auth frame so the assertion below is precise
+
+    await expect(transport.send(new ArrayBuffer(2))).rejects.toThrow(StreamlineError);
+    expect(sock.sent).toHaveLength(0);
+    delete (globalThis as Record<string, unknown>).WebSocket;
+  });
+
+  it("close/replacement race: a socket that opens after close() is discarded, not resurrected", async () => {
+    (globalThis as Record<string, unknown>).WebSocket = FakeWebSocket;
+    FakeWebSocket.instances = [];
+    const onDisconnect = vi.fn();
+    const transport = new WebSocketTransport("ws://broker:9092");
+    const connecting = transport.connect({ onFrame: vi.fn(), onDisconnect });
+    const sock = FakeWebSocket.instances[0]!;
+
+    // The transport is closed *before* the socket's open event fires — e.g.
+    // the owning Client was torn down while the handshake was still pending.
+    await transport.close();
+
+    // The underlying socket now (asynchronously, as real browsers do) opens.
+    sock.open();
+
+    // The late-opening socket must be closed immediately rather than adopted...
+    expect(sock.closed).toBe(true);
+    // ...and must never become sendable through the transport.
+    await expect(transport.send(new ArrayBuffer(1))).rejects.toThrow(StreamlineError);
+    // ...and must not resurrect a "connected" callback either.
+    sock.simulateClose();
+    expect(onDisconnect).not.toHaveBeenCalled();
+
+    // The original connect() promise is left pending forever in this scenario
+    // (the real Client only awaits it once, from the call site that started
+    // it); that's fine — it is simply abandoned, matching real-world behavior
+    // when a WebSocket never reaches OPEN before being superseded.
+    void connecting;
+    delete (globalThis as Record<string, unknown>).WebSocket;
+  });
+
+  it("close/replacement race: messages on a superseded socket are ignored, not dispatched", async () => {
+    (globalThis as Record<string, unknown>).WebSocket = FakeWebSocket;
+    FakeWebSocket.instances = [];
+    const onFrame = vi.fn();
+    const transport = new WebSocketTransport("ws://broker:9092");
+    const connecting = transport.connect({ onFrame, onDisconnect: vi.fn() });
+    const sock = FakeWebSocket.instances[0]!;
+    sock.open();
+    await connecting;
+
+    // Start a second connect() attempt on the *same* transport instance
+    // (a defensive scenario the generation fence also covers), then let the
+    // first socket receive a stray message before the new one opens.
+    const secondConnecting = transport.connect({ onFrame, onDisconnect: vi.fn() });
+    sock.onmessage?.({ data: "stale-frame" });
+    expect(onFrame).not.toHaveBeenCalled();
+    await expect(transport.send(new ArrayBuffer(1))).rejects.toThrow(/not open/);
+    expect(sock.sent).toHaveLength(0);
+
+    const secondSock = FakeWebSocket.instances[1]!;
+    secondSock.open();
+    await secondConnecting;
+    delete (globalThis as Record<string, unknown>).WebSocket;
   });
 
   it("exposes kind = 'websocket'", () => {
