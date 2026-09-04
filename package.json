@@ -1,6 +1,6 @@
 {
   "name": "@streamlinelabs/browser-sdk",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Experimental Streamline browser client with WebSocket/WebTransport, an IndexedDB outbound queue, and standalone CRDT primitives.",
   "type": "module",
   "main": "dist/index.js",
