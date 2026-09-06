@@ -1,26 +1,49 @@
 {
   "name": "@streamlinelabs/browser-sdk",
-  "version": "0.3.0",
-  "description": "Streamline browser SDK \u2014 produce/consume directly from the browser via WebSocket/WebTransport, with IndexedDB persistence and CRDT sync (M3, Experimental).",
+  "version": "0.4.0",
+  "description": "Experimental Streamline browser client with WebSocket/WebTransport, an IndexedDB outbound queue, and standalone CRDT primitives.",
   "type": "module",
   "main": "dist/index.js",
   "module": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "sideEffects": false,
   "files": [
     "dist",
     "README.md",
     "LICENSE"
   ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "clean": "node scripts/clean.mjs",
+    "build": "npm run clean && tsc -p tsconfig.json",
     "test": "vitest run",
+    "test:integration": "npm run build && node scripts/run-live-integration.mjs",
     "lint": "eslint 'src/**/*.ts'",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "check:examples": "npm run build && tsc -p tsconfig.examples.json && node scripts/check-readme-examples.mjs",
+    "check:metadata": "node scripts/validate-release.mjs --package-only",
+    "check:release": "node scripts/validate-release.mjs",
+    "test:release": "node --test scripts/validate-release.test.mjs",
+    "check:package": "npm run build && node scripts/check-package.mjs",
+    "check:sbom": "node scripts/check-sbom.mjs",
+    "check": "npm run lint && npm run typecheck && npm test && npm run test:release && npm run check:examples && npm run check:metadata && npm run check:package && npm run check:sbom",
+    "release:prepare": "npm run check:release && npm run check && npm run test:integration",
+    "prepublishOnly": "npm run release:prepare"
   },
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/StreamlineLabs/streamline-browser-sdk"
+    "url": "git+https://github.com/StreamlineLabs/streamline-browser-sdk.git"
   },
   "keywords": [
     "streamline",
@@ -28,14 +51,19 @@
     "browser",
     "crdt",
     "edge",
-    "offline-first"
+    "indexeddb",
+    "websocket",
+    "webtransport"
   ],
   "engines": {
     "node": ">=18"
   },
   "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^6.21.0",
+    "@typescript-eslint/parser": "^6.21.0",
+    "eslint": "^8.57.1",
+    "fake-indexeddb": "^5.0.2",
     "typescript": "^5.4.0",
-    "vitest": "^1.6.0",
-    "fake-indexeddb": "^5.0.2"
+    "vitest": "^1.6.0"
   }
 }

@@ -1,111 +1,129 @@
-# Contributing to Streamline Go SDK
+# Contributing to the Streamline Browser SDK
 
-Thank you for your interest in contributing to the Streamline Go SDK! This guide will help you get started.
-
-## Getting Started
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/my-feature`)
-3. Make your changes
-4. Run tests and linting
-5. Commit your changes (`git commit -m "Add my feature"`)
-6. Push to your fork (`git push origin feature/my-feature`)
-7. Open a Pull Request
+Thank you for contributing to the experimental Streamline browser client.
 
 ## Prerequisites
 
-- Go 1.21 or later
+- Node.js 18 or later
+- npm (use the version bundled with your Node.js installation)
+- A modern browser when manually exercising browser-only behavior
 
-## Development Setup
-
-```bash
-# Clone your fork
-git clone https://github.com/<your-username>/streamline-go-sdk.git
-cd streamline-go-sdk
-
-# Download dependencies
-go mod download
-
-# Build
-go build ./...
-
-# Run tests
-go test ./...
-```
-
-## Running Tests
+## Development setup
 
 ```bash
-# Run all tests
-go test ./...
-
-# Run with verbose output
-go test -v ./...
-
-# Run a specific package's tests
-go test -v ./client/...
-
-# Run with race detection
-go test -race ./...
-
-# Run with coverage
-go test -coverprofile=coverage.out ./...
-go tool cover -html=coverage.out
+git clone https://github.com/<your-username>/streamline-browser-sdk.git
+cd streamline-browser-sdk
+npm ci
 ```
 
-### Integration Tests
+Create a focused branch, make the smallest practical change, and add regression
+or characterization tests for behavior you modify.
 
-Integration tests require a running Streamline server:
+## Repository layout
+
+- `src/` — SDK source and colocated Vitest unit tests
+- `examples/` — TypeScript examples mirrored in the published README
+- `scripts/` — release, documentation, integration, and package checks
+- `.github/workflows/` — CI, integration, security, and publication automation
+
+The package is ESM-only and targets browser APIs. Avoid adding Node-only runtime
+dependencies to files exported from `src/index.ts`.
+
+## Required checks
+
+Run the full local quality gate before opening a pull request:
 
 ```bash
-# Start the server
-docker compose -f docker-compose.test.yml up -d
-
-# Run integration tests
-go test -v -tags=integration ./...
-
-# Stop the server
-docker compose -f docker-compose.test.yml down
+npm run check
 ```
 
-## Linting
+There is no formatter script currently configured. Follow the existing
+two-space indentation, double-quoted string, semicolon-terminated TypeScript
+style and rely on ESLint for configured style checks.
+
+### Unit tests
+
+Vitest discovers `src/**/*.test.ts`. The test setup installs
+`fake-indexeddb` so IndexedDB paths can be exercised without replacing the
+storage implementation.
 
 ```bash
-# Format code
-go fmt ./...
-
-# Vet code
-go vet ./...
-
-# Run staticcheck (if installed)
-staticcheck ./...
+npm test
 ```
 
-## Code Style
+When changing transports, preserve tests for connection lifecycle, frame
+normalization, error handling, and disconnect behavior. Browser platform fakes
+are appropriate for isolated unit tests, but must not be presented as live
+integration coverage.
 
-- Follow standard Go conventions and [Effective Go](https://go.dev/doc/effective_go)
-- Use `gofmt` for formatting
-- Add GoDoc comments for all exported types and functions
-- Keep functions focused and short
-- Handle errors explicitly — do not ignore them
+### README and example checks
 
-## Pull Request Guidelines
+Published TypeScript snippets are mirrored in `examples/`. Each linked README
+block must exactly match its example file, and all examples must compile:
 
-- Write clear commit messages
-- Add tests for new functionality
-- Update documentation if needed
-- Ensure `go vet ./...` and `go test ./...` pass before submitting
+```bash
+npm run check:examples
+```
 
-## Reporting Issues
+Update the README block and corresponding example together.
 
-- Use the **Bug Report** or **Feature Request** issue templates
-- Search existing issues before creating a new one
-- Include reproduction steps for bugs
+### Live integration
+
+This repository does not contain a browser-protocol server fixture or validated
+live suite. The raw Kafka listener exposed by the core Streamline server is not
+a substitute for a WebSocket/WebTransport endpoint.
+
+The integration command therefore fails intentionally:
+
+```bash
+npm run test:integration
+```
+
+Do not replace this gate with a transport-open check or a fallback to unit
+tests. A future live suite must use an explicit compatible protocol and fail on
+server errors, rejected authentication, missing acknowledgements, disconnects,
+and timeouts. Keep credentialed endpoints administrator-controlled rather than
+accepting a caller-supplied URL.
+
+## API and durability documentation
+
+Keep documentation aligned with exports from `src/index.ts`. In particular:
+
+- `Topic.append()` and `Client.produce()` confirm an IndexedDB write, not a
+  broker acknowledgement.
+- Pending entries are removed after transport handoff.
+- `LWWRegister` is a standalone in-memory primitive and does not synchronize
+  automatically.
+- `Topic.consume()` reads the local records store; the client does not currently
+  populate that store from incoming frames.
+
+Do not claim stronger delivery, persistence, authentication, compatibility, or
+CRDT synchronization guarantees without corresponding protocol behavior and
+tests.
+
+## Pull request guidelines
+
+- Explain the user-visible behavior and compatibility impact.
+- Include tests for success, failure, and relevant edge cases.
+- Update documentation and examples for public API changes.
+- Keep generated `dist/` output out of commits.
+- Ensure `npm pack --dry-run` contains no tests, test setup, secrets, or
+  development-only files.
+- Do not change the package version in feature pull requests.
+
+## Reporting issues
+
+Search existing issues before opening a new one. Include reproduction steps,
+runtime/browser details, endpoint transport type, and a minimal example.
+
+Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md);
+do not open a public security issue.
 
 ## Code of Conduct
 
-All contributors are expected to follow our [Code of Conduct](https://github.com/streamlinelabs/.github/blob/main/CODE_OF_CONDUCT.md).
+All contributors must follow the repository [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the Apache-2.0 License.
+By contributing, you agree that your contributions are licensed under the
+Apache License 2.0.
